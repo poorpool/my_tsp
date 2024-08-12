@@ -298,6 +298,76 @@ void OptInsert(int *curr_solution, double *curr_dis, double temperature) {
   }
 }
 
+// 有序交换两个区间
+void OptSwapRange(int *curr_solution, double *curr_dis, double temperature) {
+  // 生成 [idx_a, idx_b] 和 [idx_c, idx_d] 两个区间
+  int idx_a;
+  int idx_b;
+  int idx_c;
+  int idx_d;
+  {
+    int max_range_len = (n - 1) / 2;
+    int range_len = rand() % max_range_len + 1;
+    // 两个中心端点都在 [len-1, n-len] 之间，即 len-1+rand{0,n-2len+1}
+    idx_b = rand() % (n - 2 * range_len + 1) + range_len - 1;
+    idx_c = rand() % (n - 2 * range_len + 1) + range_len - 1;
+    if (idx_b > idx_c) {
+      SwapInt(&idx_b, &idx_c);
+    }
+    idx_a = idx_b - range_len + 1;
+    idx_d = idx_c + range_len - 1;
+  }
+
+  double new_dis = *curr_dis;
+  if (idx_a == 0 && idx_d == n - 1) { // 顶天立地
+    int nxt_b = (idx_b + 1) % n;
+    int prev_c = (idx_c - 1 + n) % n;
+    new_dis -= GetDistance(curr_solution[idx_b], curr_solution[nxt_b]);
+    new_dis -= GetDistance(curr_solution[prev_c], curr_solution[idx_c]);
+    new_dis -= GetDistance(curr_solution[idx_d], curr_solution[idx_a]);
+    new_dis += GetDistance(curr_solution[idx_d], curr_solution[nxt_b]);
+    new_dis += GetDistance(curr_solution[prev_c], curr_solution[idx_a]);
+    new_dis += GetDistance(curr_solution[idx_b], curr_solution[idx_c]);
+  } else if (idx_b + 1 == idx_c) { // 区间贴贴
+    int prev_a = (idx_a - 1 + n) % n;
+    int nxt_d = (idx_d + 1) % n;
+    new_dis -= GetDistance(curr_solution[prev_a], curr_solution[idx_a]);
+    new_dis -= GetDistance(curr_solution[idx_b], curr_solution[idx_c]);
+    new_dis -= GetDistance(curr_solution[idx_d], curr_solution[nxt_d]);
+    new_dis += GetDistance(curr_solution[prev_a], curr_solution[idx_c]);
+    new_dis += GetDistance(curr_solution[idx_d], curr_solution[idx_a]);
+    new_dis += GetDistance(curr_solution[idx_b], curr_solution[nxt_d]);
+  } else { // 河汉迢迢
+    int prev_a = (idx_a - 1 + n) % n;
+    int nxt_b = (idx_b + 1) % n;
+    int prev_c = (idx_c - 1 + n) % n;
+    int nxt_d = (idx_d + 1) % n;
+    new_dis -= GetDistance(curr_solution[prev_a], curr_solution[idx_a]);
+    new_dis -= GetDistance(curr_solution[idx_b], curr_solution[nxt_b]);
+    new_dis -= GetDistance(curr_solution[prev_c], curr_solution[idx_c]);
+    new_dis -= GetDistance(curr_solution[idx_d], curr_solution[nxt_d]);
+    new_dis += GetDistance(curr_solution[prev_a], curr_solution[idx_c]);
+    new_dis += GetDistance(curr_solution[idx_d], curr_solution[nxt_b]);
+    new_dis += GetDistance(curr_solution[prev_c], curr_solution[idx_a]);
+    new_dis += GetDistance(curr_solution[idx_b], curr_solution[nxt_d]);
+  }
+
+  // Metropolis 准则：若 Δt<0 则接受 S′ 作为新的当前解 S
+  // 否则以概率 exp(-Δt/T) 接受 S′ 作为新的当前解S
+  double delta_dis = new_dis - *curr_dis;
+  if (delta_dis < 0.0 || ChkRand(exp(-delta_dis / temperature))) {
+    int len = idx_b - idx_a + 1;
+    for (int i = 0; i < len; i++) {
+      SwapInt(&curr_solution[idx_a + i], &curr_solution[idx_c + i]);
+    }
+    *curr_dis = new_dis;
+    if (*curr_dis < best_dis) {
+      best_dis = *curr_dis;
+      memcpy(best_solution, curr_solution, n * sizeof(int));
+    }
+  }
+}
+
 // 用 DP 精准解决小规模【开环】TSP
 // 时间复杂度：2**n * n**2
 // 空间复杂度：2**n * n
@@ -399,17 +469,21 @@ void SimulatedAnnealing() {
     do {
       int rnd = rand() % 1000; // 决定操作概率
       if (rnd < 300) {
-        // 20% 概率交换两点
+        // 30% 概率交换两点
         Opt2PointExchange(curr_solution, &curr_dis, temperature);
       } else if (rnd < 300) { // 25%或者10%？
-        // 10% 概率反转区间。这个操作可能不太适合 ATSP
+        // 0% 概率反转区间。这个操作可能不太适合 ATSP
         // 额，感觉不写他更好。。。
         OptRangeReverse(curr_solution, &curr_dis, temperature);
-      } else {
+      } else if (rnd < 1000) {
         // 70% 概率随机插入
         // 这个操作好像有点牛逼。设置成30%/10%/60%的时候效果挺好
         // 好像把它设置成 100% 都行
         OptInsert(curr_solution, &curr_dis, temperature);
+      } else {
+        // 0% 概率交换两个区间
+        // 额，感觉不写他更好。。。
+        OptSwapRange(curr_solution, &curr_dis, temperature);
       }
       temperature *= SA_COOL_RATE;
       sa_cnt++;
