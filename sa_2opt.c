@@ -1,3 +1,4 @@
+#include <float.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -81,7 +82,7 @@ void InitSolution() {
   // 贪心获得后续节点
   for (int i = 1; i < n; i++) {
     int lst = best_solution[i - 1]; // 当前节点编号
-    double mxdis = INFINITY;
+    double mxdis = DBL_MAX;
     nxt = lst;
     for (int j = 0; j <= lastpos; j++) {
       double dis = GetDistance(lst, ids[j]);
@@ -294,9 +295,82 @@ void OptInsert(int *curr_solution, double *curr_dis, double temperature) {
   }
 }
 
+// 用 DP 精准解决小规模【开环】TSP
+// 时间复杂度：2**n * n**2
+// 空间复杂度：2**n * n
+void ExactDp() {
+  int n__2 = 1 << n;
+  double **dp = (double **)malloc(n__2 * sizeof(double *));
+  int **parent = (int **)malloc(n__2 * sizeof(int *));
+  for (int i = 0; i < n__2; i++) {
+    dp[i] = (double *)malloc(n * sizeof(double));
+    parent[i] = (int *)malloc(n * sizeof(int));
+    for (int j = 0; j < n; j++) {
+      dp[i][j] = DBL_MAX; // 初始化为无穷大
+      parent[i][j] = -1;  // 初始化为无
+    }
+  }
+
+  // 从 0 开始
+  dp[1 << 0][0] = 0.0;
+  for (int S = 1; S < n__2; S++) {
+    for (int i = 0; i < n; i++) {
+      if (!(S & (1 << i))) {
+        continue;
+      }
+      for (int j = 0; j < n; j++) {
+        if (i == j || !(S & (1 << j))) {
+          continue;
+        }
+        int prev = S & ~(1 << i);
+        double dis = dp[prev][j] + GetDistance(j, i);
+        if (dis < dp[S][i]) {
+          dp[S][i] = dis;
+          parent[S][i] = j;
+        }
+      }
+    }
+  }
+
+  // 恢复答案
+  best_dis = DBL_MAX;
+  int lst = -1;
+  int S = n__2 - 1;
+  for (int i = 0; i < n; i++) {
+    if (dp[S][i] < best_dis) {
+      best_dis = dp[S][i];
+      lst = i;
+    }
+  }
+  best_solution[n - 1] = lst;
+  for (int i = n - 2; i >= 0; i--) {
+    best_solution[i] = parent[S][lst];
+    S &= ~(1 << lst);
+    lst = best_solution[i];
+  }
+
+  for (int i = 0; i < n__2; i++) {
+    free(dp[i]);
+    free(parent[i]);
+  }
+  free(dp);
+  free(parent);
+}
+
 // 模拟退火解决 ATSP 问题 主函数
 void SimulatedAnnealing() {
   int64_t start_us = GetUs();
+
+  if (n <= 15) {
+    ExactDp(); // 解决的是【开环】TSP
+    for (int i = 0; i < n; i++) {
+      printf("%d ", best_solution[i]);
+    }
+    printf("as result. Note that this is for OTSP!\n");
+    PrintMyResults(start_us);
+    return;
+  }
+
   int64_t should_end_us = start_us + SA_MAX_RUN_US;
 
   // 贪心初始化一个解
@@ -326,10 +400,12 @@ void SimulatedAnnealing() {
         Opt2PointExchange(curr_solution, &curr_dis, temperature);
       } else if (rnd < 300) { // 25%或者10%？
         // 10% 概率反转区间。这个操作可能不太适合 ATSP
+        // 额，感觉不写他更好。。。
         OptRangeReverse(curr_solution, &curr_dis, temperature);
       } else {
         // 70% 概率随机插入
         // 这个操作好像有点牛逼。设置成30%/10%/60%的时候效果挺好
+        // 好像把它设置成 100% 都行
         OptInsert(curr_solution, &curr_dis, temperature);
       }
       temperature *= SA_COOL_RATE;
