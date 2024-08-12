@@ -6,11 +6,13 @@
 #include <time.h>
 
 const int64_t SA_MAX_RUN_US = 18.5 * 1000000; // 最多允许模拟退火多少秒
-const double INIT_ACCEPT_P = 0.25; // 一开始能以多大概率接收差解
-const double SA_RATE = 0.99;       // 模拟退火降温率
-const int FINAL_ACCEPT_RATE_DAO = 100000; // FINAL_ACCEPT_RATE 的倒数
+const double INIT_ACCEPT_P =
+    0.25; // 一开始能以多大概率接收差解。0.25还不错，0.75不行
+const double SA_RATE =
+    0.97; // 模拟退火降温率。0.99/98/97都差不多。好吧，快速退火可能还是对大规模更好一些。大规模0.97
+// const int FINAL_ACCEPT_RATE_DAO = 100000; // FINAL_ACCEPT_RATE 的倒数
 const double FINAL_ACCEPT_RATE =
-    1.0 / FINAL_ACCEPT_RATE_DAO; // 退火过程中温度不得低于多少
+    0.1; // 退火过程中温度不得低于一开始的温度的多少。大规模0.1
 
 int n; // 节点总数
 int sqrt_n;
@@ -71,8 +73,8 @@ void InitSolution() {
 }
 
 static inline int ChkRand(double p) {
-  int acceptance = p * FINAL_ACCEPT_RATE_DAO;
-  int rnd = (long long)rand() * rand() % FINAL_ACCEPT_RATE_DAO;
+  int acceptance = p * 1000000;
+  int rnd = (long long)rand() * rand() % 1000000;
   if (rnd < acceptance) {
     return 1;
   }
@@ -259,6 +261,7 @@ void OptInsert(int *curr_solution, int *tmp_solution, double *curr_dis,
   //   idx_j = idx_i + wanna_len - 1;
   // }
   int is_qian = rand() % 2; // 为 1 则把 idx_i 挪到 idx_j 后头
+  // int is_qian = 0;
   double new_dis = *curr_dis;
   if (is_qian) {
     int pre_i = (idx_i - 1 + n) % n;
@@ -344,6 +347,8 @@ void SimulatedAnnealing() {
   int *curr_solution = (int *)malloc(n * sizeof(int));
   int *tmp_solution = (int *)malloc(n * sizeof(int));
 
+  int sa_cnt = 0;
+  double last_best_dis = best_dis;
   // 模拟退火
   while (GetUs() < should_end_us) {
     // 复制历史最好解，按这个退火
@@ -356,11 +361,12 @@ void SimulatedAnnealing() {
     // curr_dis = CalcSolutionDis(curr_solution);
 
     double temprature = -1.0; // 当前温度。起初为 -1，后面根据第一次结果生成
+    double min_temprature = -1.0;
     do {
       int rnd = rand() % 1000; // 决定操作概率
-      if (rnd < 500) {         // 50% 概率交换两点
+      if (rnd < 200) {         // 50% 概率交换两点
         Opt2PointExchange(curr_solution, tmp_solution, &curr_dis, &temprature);
-      } else if (rnd < 750) { // 25%
+      } else if (rnd < 300) { // 25%或者10%？
         // 概率反转区间。不过这个概率好像也不至于这么大。主要是节点越多，越不适合进行这个操作！这个操作是
         // O(n) 的
         // 1000 的时候，这玩意占 80% 还不错。10000
@@ -368,10 +374,19 @@ void SimulatedAnnealing() {
         // 长度不是越长就越好的
         OptRangeReverse(curr_solution, tmp_solution, &curr_dis, &temprature);
       } else {
+        // 这个操作好像有点牛逼。设置成30%/10%/60%的时候效果挺好
         OptInsert(curr_solution, tmp_solution, &curr_dis, &temprature);
       }
+      if (min_temprature < -0.5) {
+        min_temprature = temprature * FINAL_ACCEPT_RATE;
+      }
       temprature *= SA_RATE;
-    } while (temprature > FINAL_ACCEPT_RATE);
+      sa_cnt++;
+      if (best_dis < last_best_dis - 0.5) {
+        // printf("after #%d sa, best_dis %.4f\n", sa_cnt, best_dis);
+        last_best_dis = best_dis;
+      }
+    } while (temprature > min_temprature);
   }
 
   free(tmp_solution);
