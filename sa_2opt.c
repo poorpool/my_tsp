@@ -5,7 +5,7 @@
 #include <sys/time.h>
 #include <time.h>
 
-const int64_t SA_MAX_RUN_US = 18.5 * 1000000; // 最多允许模拟退火多少秒
+const int64_t SA_MAX_RUN_US = 5.5 * 1000000; // 最多允许模拟退火多少秒
 const double INIT_ACCEPT_P = 0.75; // 一开始能以多大概率接收差解
 const double SA_RATE = 0.99;       // 模拟退火降温率
 const int FINAL_ACCEPT_RATE_DAO = 100000; // FINAL_ACCEPT_RATE 的倒数
@@ -17,17 +17,23 @@ int **distances;    // 距离矩阵（中小规模使用）
 int *best_solution; // 历史最好解
 double best_dis;    // 历史最好距离
 
-int64_t GetUs() {
+static inline int64_t GetUs() {
   struct timeval tv;
   gettimeofday(&tv, NULL);
   return (int64_t)tv.tv_sec * 1000000 + (int64_t)tv.tv_usec;
 }
 
-double GetDistance(int i, int j) { return 1.0 * distances[i][j]; }
+static inline double GetDistance(int i, int j) { return 1.0 * distances[i][j]; }
+
+static inline void SwapInt(int *i, int *j) {
+  int tmp = *i;
+  *i = *j;
+  *j = tmp;
+}
 
 // 获得一个初始解
 void InitSolution() {
-  int *ids = malloc(n * sizeof(int)); // 还没进入初始序列的解
+  int *ids = (int *)malloc(n * sizeof(int)); // 还没进入初始序列的解
   for (int i = 0; i < n; i++) {
     ids[i] = i;
   }
@@ -59,7 +65,7 @@ void InitSolution() {
   printf("at first, best_dis %.4f\n", best_dis);
 }
 
-int chk_rand(double p) {
+static inline int ChkRand(double p) {
   int acceptance = p * FINAL_ACCEPT_RATE_DAO;
   int rnd = (long long)rand() * rand() % FINAL_ACCEPT_RATE_DAO;
   if (rnd < acceptance) {
@@ -80,6 +86,125 @@ void PrintMyResults(int64_t start_us) {
          ans, best_dis, used_us / 1000000.0);
 }
 
+// 尝试交换两节点。如果更好，则更新到 best_solution 中
+void Opt2PointExchange(int *curr_solution, int *tmp_solution, double *curr_dis,
+                       double *temprature) {
+  // 构造一个新的 curr_solution。即：随机 swap i、j
+  int i = rand() % n;
+  int j = rand() % n;
+  if (i == j) {
+    return;
+  }
+  if (i > j) {
+    SwapInt(&i, &j);
+  }
+  // NOTE(cyx): 在移植以后，这个可能还会变
+  double new_dis = *curr_dis;
+  int pre_i = (i - 1 + n) % n;
+  int nxt_i = (i + 1) % n;
+  int pre_j = (j - 1 + n) % n;
+  int nxt_j = (j + 1) % n;
+  // 缩水版 2-opt
+  if (nxt_i != j) {
+    new_dis -= GetDistance(curr_solution[pre_i], curr_solution[i]);
+    new_dis -= GetDistance(curr_solution[i], curr_solution[nxt_i]);
+    new_dis -= GetDistance(curr_solution[pre_j], curr_solution[j]);
+    new_dis -= GetDistance(curr_solution[j], curr_solution[nxt_j]);
+    new_dis += GetDistance(curr_solution[pre_i], curr_solution[j]);
+    new_dis += GetDistance(curr_solution[j], curr_solution[nxt_i]);
+    new_dis += GetDistance(curr_solution[pre_j], curr_solution[i]);
+    new_dis += GetDistance(curr_solution[i], curr_solution[nxt_j]);
+  } else {
+    new_dis -= GetDistance(curr_solution[pre_i], curr_solution[i]);
+    new_dis -= GetDistance(curr_solution[i], curr_solution[j]);
+    new_dis -= GetDistance(curr_solution[j], curr_solution[nxt_j]);
+    new_dis += GetDistance(curr_solution[pre_i], curr_solution[j]);
+    new_dis += GetDistance(curr_solution[j], curr_solution[i]);
+    new_dis += GetDistance(curr_solution[i], curr_solution[nxt_j]);
+  }
+  // Metropolis准则：若Δt′<0则接受S′作为新的当前解S，否则以概率exp（-Δt′/T）接受S′作为新的当前解S
+  double delta_dis = new_dis - *curr_dis;
+  if (*temprature < -0.5) {
+    // exp（-Δt′/T)=p -> -Δt′/t = ln(p) -> t = -Δt′/ln(p)
+    *temprature = -fabs(delta_dis) / log(INIT_ACCEPT_P);
+  }
+  if (delta_dis < 0.0 || ChkRand(exp(-delta_dis / *temprature))) {
+    *curr_dis = new_dis;
+    SwapInt(&curr_solution[i], &curr_solution[j]);
+    if (*curr_dis < best_dis) {
+      best_dis = *curr_dis;
+      memcpy(best_solution, curr_solution, n * sizeof(int));
+    }
+  }
+}
+
+// 尝试翻转一个 range。如果更好，则更新到 best_solution 中
+// 具体而言，有头、中、尾实现
+void OptRangeReverse(int *curr_solution, int *tmp_solution, double *curr_dis,
+                     double *temprature) {
+  int idx_start = rand() % n;
+  int idx_end = rand() % n;
+  if (idx_start > idx_end) {
+    SwapInt(&idx_start, &idx_end);
+  }
+  if (idx_end - idx_start + 1 == n || idx_end == idx_start) { // 没法搞了
+    return;
+  }
+  // 概率地决定是反转最前面、最后面，还是中间
+  // 这么生成期望长度是 n / 3
+  {
+    int rnd = rand() % 1000;
+    int len = idx_end - idx_start + 1;
+    if (rnd < 200) { // 20% 概率反转开头
+      idx_start = 0;
+      idx_end = len - 1;
+    } else if (rnd < 400) { // 20% 概率反转结尾
+      idx_start = n - len;
+      idx_end = n - 1;
+    }
+  }
+  double new_dis = *curr_dis;
+  // 先内部 new_dis 变化
+  for (int i = idx_start + 1; i <= idx_end; i++) {
+    new_dis -= GetDistance(curr_solution[i - 1], curr_solution[i]);
+    new_dis += GetDistance(curr_solution[i], curr_solution[i - 1]);
+  }
+  // 再外部 new_dis 变化
+  int prev = (idx_start - 1 + n) % n;
+  new_dis -= GetDistance(curr_solution[prev], curr_solution[idx_start]);
+  new_dis += GetDistance(curr_solution[prev], curr_solution[idx_end]);
+  int nxt = (idx_end + 1) % n;
+  new_dis -= GetDistance(curr_solution[idx_end], curr_solution[nxt]);
+  new_dis += GetDistance(curr_solution[idx_start], curr_solution[nxt]);
+  // Metropolis准则：若Δt′<0则接受S′作为新的当前解S，否则以概率exp（-Δt′/T）接受S′作为新的当前解S
+  double delta_dis = new_dis - *curr_dis;
+  if (*temprature < -0.5) {
+    // exp（-Δt′/T)=p -> -Δt′/t = ln(p) -> t = -Δt′/ln(p)
+    *temprature = -fabs(delta_dis) / log(INIT_ACCEPT_P);
+  }
+  if (delta_dis > 0) {
+
+    printf("After range xchange %d %d, delta_dis %.2f new_dis %.2f best_dis "
+           "%.2f temp %.2f p %.2f\n",
+           idx_start, idx_end, delta_dis, new_dis, best_dis, *temprature,
+           exp(-delta_dis / *temprature));
+  }
+  if (delta_dis < 0.0 || ChkRand(exp(-delta_dis / *temprature))) {
+    *curr_dis = new_dis;
+    int swapi = idx_start;
+    int swapj = idx_end;
+    while (swapi < swapj) {
+      SwapInt(&curr_solution[swapi], &curr_solution[swapj]);
+      swapi++;
+      swapj--;
+    }
+    if (*curr_dis < best_dis) {
+      best_dis = *curr_dis;
+      memcpy(best_solution, curr_solution, n * sizeof(int));
+    }
+  }
+}
+
 // 模拟退火解决 ATSP 问题 主函数
 void SimulatedAnnealing() {
   int64_t start_us = GetUs();
@@ -88,8 +213,9 @@ void SimulatedAnnealing() {
   // 贪心初始化一个解
   InitSolution();
 
-  int *curr_solution = malloc(n * sizeof(int));
-  int *tmp_solution = malloc(n * sizeof(int));
+  // 两个缓冲区
+  int *curr_solution = (int *)malloc(n * sizeof(int));
+  int *tmp_solution = (int *)malloc(n * sizeof(int));
 
   // 模拟退火
   while (GetUs() < should_end_us) {
@@ -100,57 +226,11 @@ void SimulatedAnnealing() {
 
     double temprature = -1.0; // 当前温度。起初为 -1，后面根据第一次结果生成
     do {
-      // printf("curr temp %.3f\n", temprature);
-      // 构造一个新的 curr_solution。即：随机 swap i、j
-      int i = rand() % n;
-      int j = rand() % n;
-      if (i == j) {
-        continue;
-      }
-      if (i > j) {
-        int tmp = j;
-        j = i;
-        i = j;
-      }
-      // NOTE(cyx): 在移植以后，这个可能还会变
-      double new_dis = curr_dis;
-      int pre_i = (i - 1 + n) % n;
-      int nxt_i = (i + 1) % n;
-      int pre_j = (j - 1 + n) % n;
-      int nxt_j = (j + 1) % n;
-      // 缩水版 2-opt
-      if (nxt_i != j) {
-        new_dis -= GetDistance(curr_solution[pre_i], curr_solution[i]);
-        new_dis -= GetDistance(curr_solution[i], curr_solution[nxt_i]);
-        new_dis -= GetDistance(curr_solution[pre_j], curr_solution[j]);
-        new_dis -= GetDistance(curr_solution[j], curr_solution[nxt_j]);
-        new_dis += GetDistance(curr_solution[pre_i], curr_solution[j]);
-        new_dis += GetDistance(curr_solution[j], curr_solution[nxt_i]);
-        new_dis += GetDistance(curr_solution[pre_j], curr_solution[i]);
-        new_dis += GetDistance(curr_solution[i], curr_solution[nxt_j]);
-      } else {
-        new_dis -= GetDistance(curr_solution[pre_i], curr_solution[i]);
-        new_dis -= GetDistance(curr_solution[i], curr_solution[j]);
-        new_dis -= GetDistance(curr_solution[j], curr_solution[nxt_j]);
-        new_dis += GetDistance(curr_solution[pre_i], curr_solution[j]);
-        new_dis += GetDistance(curr_solution[j], curr_solution[i]);
-        new_dis += GetDistance(curr_solution[i], curr_solution[nxt_j]);
-      }
-      // Metropolis准则：若Δt′<0则接受S′作为新的当前解S，否则以概率exp（-Δt′/T）接受S′作为新的当前解S
-      double delta_dis = new_dis - curr_dis;
-      if (temprature < -0.5) {
-        // exp（-Δt′/T)=p -> -Δt′/t = ln(p) -> t = -Δt′/ln(p)
-        temprature = -fabs(delta_dis) / log(INIT_ACCEPT_P);
-      }
-      if (delta_dis < 0.0 || chk_rand(exp(-delta_dis / temprature))) {
-        curr_dis = new_dis;
-        int tmp = curr_solution[i];
-        curr_solution[i] = curr_solution[j];
-        curr_solution[j] = tmp;
-        if (curr_dis < best_dis) {
-          best_dis = curr_dis;
-          memcpy(best_solution, curr_solution, n * sizeof(int));
-        }
+      int rnd = rand() % 1000; // 决定操作概率
+      if (rnd < 200) {         // 20% 概率交换两点
+        Opt2PointExchange(curr_solution, tmp_solution, &curr_dis, &temprature);
+      } else { // 80% 概率反转区间
+        OptRangeReverse(curr_solution, tmp_solution, &curr_dis, &temprature);
       }
       temprature *= SA_RATE;
     } while (temprature > FINAL_ACCEPT_RATE);
@@ -173,15 +253,15 @@ int main(int argc, char *argv[]) {
     return 0;
   }
   fscanf(fp, "%d", &n);
-  distances = malloc(n * sizeof(int *));
+  distances = (int **)malloc(n * sizeof(int *));
   for (int i = 0; i < n; i++) {
-    distances[i] = malloc(n * sizeof(int));
+    distances[i] = (int *)malloc(n * sizeof(int));
     for (int j = 0; j < n; j++) {
       fscanf(fp, "%d", &distances[i][j]);
     }
   }
   fclose(fp);
-  best_solution = malloc(n * sizeof(int));
+  best_solution = (int *)malloc(n * sizeof(int));
   // calc
   SimulatedAnnealing();
   // clean
