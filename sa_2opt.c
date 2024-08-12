@@ -5,50 +5,80 @@
 #include <sys/time.h>
 #include <time.h>
 
-const int64_t SA_MAX_RUN_US = 18.5 * 1000000; // 最多允许模拟退火多少秒
-const double INIT_ACCEPT_P =
-    0.25; // 一开始能以多大概率接收差解。0.25还不错，0.75不行
-const double SA_RATE =
-    0.97; // 模拟退火降温率。0.99/98/97都差不多。好吧，快速退火可能还是对大规模更好一些。大规模0.97
-// const int FINAL_ACCEPT_RATE_DAO = 100000; // FINAL_ACCEPT_RATE 的倒数
-const double FINAL_ACCEPT_RATE =
-    0.1; // 退火过程中温度不得低于一开始的温度的多少。大规模0.1
+// 最多允许模拟退火多少微秒
+const int64_t SA_MAX_RUN_US = 18.5 * 1000000;
+// 一开始能以多大概率接收差解
+// 0.25 效果最好，0.5 略次，0.75 不太好
+const double INIT_ACCEPT_P = 0.25;
+// 模拟退火降温率
+// 0.97/98/99 都差不多
+// 0.999 不太好
+const double SA_COOL_RATE = 0.97;
+// 退火结束时，温度为初始温度的比值
+// 比如 exp(-Δt/T)=0.25 的话，exp(-Δt/(T*0.1)) 就很小很小了
+const double MIN_SA_COOL_RATIO = 0.1;
 
-int n; // 节点总数
-int sqrt_n;
-int *point_x;       // 坐标 X
-int *point_y;       // 坐标 Y
-int *best_solution; // 历史最好解
+int n;              // 节点总数
+int *point_x;       // X 坐标数组
+int *point_y;       // Y 坐标数组
+int *best_solution; // 历史最好解数组
 double best_dis;    // 历史最好距离
 
+// 读取当前微秒数
 static inline int64_t GetUs() {
   struct timeval tv;
   gettimeofday(&tv, NULL);
   return (int64_t)tv.tv_sec * 1000000 + (int64_t)tv.tv_usec;
 }
 
+// 获取两点间距离，不论距离到底是如何计算的
 static inline double GetDistance(int i, int j) {
   return sqrt((long long)(point_x[i] - point_x[j]) * (point_x[i] - point_x[j]) +
               (long long)(point_y[i] - point_y[j]) * (point_y[i] - point_y[j]));
 }
 
+// 交换两个整数
 static inline void SwapInt(int *i, int *j) {
   int tmp = *i;
   *i = *j;
   *j = tmp;
 }
 
-// 获得一个初始解
+// 根据概率 p 返回 1 或 0
+static inline int ChkRand(double p) {
+  int acceptance = p * 1000000;
+  int rnd = (long long)rand() * rand() % 1000000;
+  if (rnd < acceptance) {
+    return 1;
+  }
+  return 0;
+}
+
+// 获得一条路径的总距离
+static inline double CalcTourDistance(int *tour) {
+  double ans = 0.0;
+  for (int i = 0; i < n; i++) {
+    ans += GetDistance(tour[i], tour[(i + 1) % n]);
+  }
+  return ans;
+}
+
+// 贪心获得一个初始解
 void InitSolution() {
-  int *ids = (int *)malloc(n * sizeof(int)); // 还没进入初始序列的解
+  // 初始化还没进入解序列的节点编号
+  int *ids = (int *)malloc(n * sizeof(int));
   for (int i = 0; i < n; i++) {
     ids[i] = i;
   }
+
+  // 随机设置起始节点
   int lastpos = n - 1;  // ids 最后一个有效位置
   int nxt = rand() % n; // 下个节点在 ids 中的序号
   best_solution[0] = ids[nxt];
   ids[nxt] = ids[lastpos];
   lastpos--;
+
+  // 贪心获得后续节点
   for (int i = 1; i < n; i++) {
     int lst = best_solution[i - 1]; // 当前节点编号
     double mxdis = INFINITY;
@@ -65,42 +95,23 @@ void InitSolution() {
     lastpos--;
   }
   free(ids);
-  best_dis = 0.0;
-  for (int i = 0; i < n; i++) {
-    best_dis += GetDistance(best_solution[i], best_solution[(i + 1) % n]);
-  }
-  printf("at first, best_dis %.4f\n", best_dis);
+
+  // 计算贪心解法的总距离
+  best_dis = CalcTourDistance(best_solution);
+  printf("Init greedy solution, best_dis %.4f\n", best_dis);
 }
 
-static inline int ChkRand(double p) {
-  int acceptance = p * 1000000;
-  int rnd = (long long)rand() * rand() % 1000000;
-  if (rnd < acceptance) {
-    return 1;
-  }
-  return 0;
-}
-
-double CalcSolutionDis(int *sol) {
-  double ans = 0.0;
-  for (int i = 0; i < n; i++) {
-    ans += GetDistance(sol[i], sol[(i + 1) % n]);
-  }
-  return ans;
-}
-
-// 输出最终 best_solution 及其结果
+// 输出最终 best_solution 的结果及耗时
 void PrintMyResults(int64_t start_us) {
-  double ans = CalcSolutionDis(best_solution);
+  double ans = CalcTourDistance(best_solution);
   int64_t used_us = GetUs() - start_us;
-  printf("\nFor %d node atsp, my ans is %.4f best_dis %.4f. cost %.2f s\n", n,
-         ans, best_dis, used_us / 1000000.0);
+  printf("For %d node Euclid TSP, calc_ans %.4f, best_dis %.4f, time %.2f s\n",
+         n, ans, best_dis, used_us / 1000000.0);
 }
 
-// 尝试交换两节点。如果更好，则更新到 best_solution 中
-void Opt2PointExchange(int *curr_solution, int *tmp_solution, double *curr_dis,
-                       double *temprature) {
-  // 构造一个新的 curr_solution。即：随机 swap i、j
+// 随机两个下标 i、j 并尝试交换它们
+void Opt2PointExchange(int *curr_solution, double *curr_dis,
+                       double temperature) {
   int i = rand() % n;
   int j = rand() % n;
   if (i == j) {
@@ -109,13 +120,13 @@ void Opt2PointExchange(int *curr_solution, int *tmp_solution, double *curr_dis,
   if (i > j) {
     SwapInt(&i, &j);
   }
-  // NOTE(cyx): 在移植以后，这个可能还会变
+
   double new_dis = *curr_dis;
   int pre_i = (i - 1 + n) % n;
   int nxt_i = (i + 1) % n;
   int pre_j = (j - 1 + n) % n;
   int nxt_j = (j + 1) % n;
-  // 缩水版 2-opt
+  // 一头一尾
   if (i == 0 && j == n - 1) {
     new_dis -= GetDistance(curr_solution[pre_j], curr_solution[j]);
     new_dis -= GetDistance(curr_solution[j], curr_solution[i]);
@@ -123,7 +134,7 @@ void Opt2PointExchange(int *curr_solution, int *tmp_solution, double *curr_dis,
     new_dis += GetDistance(curr_solution[pre_j], curr_solution[i]);
     new_dis += GetDistance(curr_solution[i], curr_solution[j]);
     new_dis += GetDistance(curr_solution[j], curr_solution[nxt_i]);
-  } else if (nxt_i != j) {
+  } else if (nxt_i != j) { // 不相连
     new_dis -= GetDistance(curr_solution[pre_i], curr_solution[i]);
     new_dis -= GetDistance(curr_solution[i], curr_solution[nxt_i]);
     new_dis -= GetDistance(curr_solution[pre_j], curr_solution[j]);
@@ -132,7 +143,7 @@ void Opt2PointExchange(int *curr_solution, int *tmp_solution, double *curr_dis,
     new_dis += GetDistance(curr_solution[j], curr_solution[nxt_i]);
     new_dis += GetDistance(curr_solution[pre_j], curr_solution[i]);
     new_dis += GetDistance(curr_solution[i], curr_solution[nxt_j]);
-  } else {
+  } else { // 相连
     new_dis -= GetDistance(curr_solution[pre_i], curr_solution[i]);
     new_dis -= GetDistance(curr_solution[i], curr_solution[j]);
     new_dis -= GetDistance(curr_solution[j], curr_solution[nxt_j]);
@@ -140,22 +151,13 @@ void Opt2PointExchange(int *curr_solution, int *tmp_solution, double *curr_dis,
     new_dis += GetDistance(curr_solution[j], curr_solution[i]);
     new_dis += GetDistance(curr_solution[i], curr_solution[nxt_j]);
   }
-  // Metropolis准则：若Δt′<0则接受S′作为新的当前解S，否则以概率exp（-Δt′/T）接受S′作为新的当前解S
+
+  // Metropolis 准则：若 Δt<0 则接受 S′ 作为新的当前解 S
+  // 否则以概率 exp(-Δt/T) 接受 S′ 作为新的当前解S
   double delta_dis = new_dis - *curr_dis;
-  if (*temprature < -0.5) {
-    // exp（-Δt′/T)=p -> -Δt′/t = ln(p) -> t = -Δt′/ln(p)
-    double wanna_dis = best_dis * 0.001;
-    *temprature = -fabs(wanna_dis) / log(INIT_ACCEPT_P);
-  }
-  if (0) {
-    printf("After 2point xchange %d %d, delta_dis %.2f new_dis %.2f best_dis "
-           "%.2f temp %.2f p %.2f\n",
-           i, j, delta_dis, new_dis, best_dis, *temprature,
-           exp(-delta_dis / *temprature));
-  }
-  if (delta_dis < 0.0 || ChkRand(exp(-delta_dis / *temprature))) {
-    *curr_dis = new_dis;
+  if (delta_dis < 0.0 || ChkRand(exp(-delta_dis / temperature))) {
     SwapInt(&curr_solution[i], &curr_solution[j]);
+    *curr_dis = new_dis;
     if (*curr_dis < best_dis) {
       best_dis = *curr_dis;
       memcpy(best_solution, curr_solution, n * sizeof(int));
@@ -163,44 +165,38 @@ void Opt2PointExchange(int *curr_solution, int *tmp_solution, double *curr_dis,
   }
 }
 
-// 尝试翻转一个 range。如果更好，则更新到 best_solution 中
-// 具体而言，有头、中、尾实现
-void OptRangeReverse(int *curr_solution, int *tmp_solution, double *curr_dis,
-                     double *temprature) {
-  // int wanna_len = 3 + rand() % sqrt_n;
-  // int wanna_len = sqrt_n;
-  // int idx_start = rand() % (n - wanna_len + 1);
-  // int idx_end = idx_start + wanna_len - 1;
-
+// 尝试随机翻转一个子序列
+// 具体而言，有头、中、尾翻转
+void OptRangeReverse(int *curr_solution, double *curr_dis, double temperature) {
+  // 生成期望长度为 n/3 的线段
   int idx_start = rand() % n;
   int idx_end = rand() % n;
   if (idx_start > idx_end) {
     SwapInt(&idx_start, &idx_end);
   }
-  if (idx_end - idx_start + 1 == n || idx_end == idx_start) { // 没法搞了
+  // 长度为 1 或 n 均没必要翻转
+  if (idx_end - idx_start + 1 == n || idx_start == idx_end) {
     return;
   }
-  if (n > 1200) {
+  // 限制操作长度，降低单次操作耗时
+  if (n > 1200) { // magic
     int wanna_len = rand() % 600 + 3;
     idx_start = rand() % (n - wanna_len + 1);
     idx_end = idx_start + wanna_len - 1;
   }
-  // if (sqrt_n > 40 && idx_start + 10 * sqrt_n < idx_end) {
-  //   idx_end = idx_start + rand() % (10 * sqrt_n);
-  // }
-  // 概率地决定是反转最前面、最后面，还是中间
-  // 这么生成期望长度是 n / 3
+  // 概率地决定是翻转最前面、最后面，还是中间
   {
     int rnd = rand() % 1000;
     int len = idx_end - idx_start + 1;
-    if (rnd < 200) { // 20% 概率反转开头
+    if (rnd < 200) { // 20% 概率翻转开头
       idx_start = 0;
       idx_end = len - 1;
-    } else if (rnd < 400) { // 20% 概率反转结尾
+    } else if (rnd < 400) { // 20% 概率翻转结尾
       idx_start = n - len;
       idx_end = n - 1;
-    }
+    } // 60% 概率翻转中间
   }
+
   double new_dis = *curr_dis;
   // 先内部 new_dis 变化
   for (int i = idx_start + 1; i <= idx_end; i++) {
@@ -214,21 +210,11 @@ void OptRangeReverse(int *curr_solution, int *tmp_solution, double *curr_dis,
   int nxt = (idx_end + 1) % n;
   new_dis -= GetDistance(curr_solution[idx_end], curr_solution[nxt]);
   new_dis += GetDistance(curr_solution[idx_start], curr_solution[nxt]);
-  // Metropolis准则：若Δt′<0则接受S′作为新的当前解S，否则以概率exp（-Δt′/T）接受S′作为新的当前解S
+
+  // Metropolis 准则：若 Δt<0 则接受 S′ 作为新的当前解 S
+  // 否则以概率 exp(-Δt/T) 接受 S′ 作为新的当前解S
   double delta_dis = new_dis - *curr_dis;
-  if (*temprature < -0.5) {
-    // exp（-Δt′/T)=p -> -Δt′/t = ln(p) -> t = -Δt′/ln(p)
-    double wanna_dis = best_dis * 0.001;
-    *temprature = -fabs(wanna_dis) / log(INIT_ACCEPT_P);
-  }
-  if (0) {
-    printf("After range xchange %d %d, delta_dis %.2f new_dis %.2f best_dis "
-           "%.2f temp %.2f p %.2f\n",
-           idx_start, idx_end, delta_dis, new_dis, best_dis, *temprature,
-           exp(-delta_dis / *temprature));
-  }
-  if (delta_dis < 0.0 || ChkRand(exp(-delta_dis / *temprature))) {
-    *curr_dis = new_dis;
+  if (delta_dis < 0.0 || ChkRand(exp(-delta_dis / temperature))) {
     int swapi = idx_start;
     int swapj = idx_end;
     while (swapi < swapj) {
@@ -236,6 +222,7 @@ void OptRangeReverse(int *curr_solution, int *tmp_solution, double *curr_dis,
       swapi++;
       swapj--;
     }
+    *curr_dis = new_dis;
     if (*curr_dis < best_dis) {
       best_dis = *curr_dis;
       memcpy(best_solution, curr_solution, n * sizeof(int));
@@ -243,27 +230,24 @@ void OptRangeReverse(int *curr_solution, int *tmp_solution, double *curr_dis,
   }
 }
 
-// 尝试插入一个
-void OptInsert(int *curr_solution, int *tmp_solution, double *curr_dis,
-               double *temprature) {
-  // 把 idx_i 挪到 idx_j 后头
+// 尝试将一个元素随机插到另一个元素前/后
+// 该操作相比 range 翻转更符合 ATSP 局部性原则
+// 此外，该操作计算 new_dis 为 O(1) 的，因此不需要限制操作长度
+// 毕竟只有更改被接受了才会产生 O(n) 的调整
+void OptInsert(int *curr_solution, double *curr_dis, double temperature) {
   int idx_i = rand() % n;
   int idx_j = rand() % n;
   if (idx_i > idx_j) {
     SwapInt(&idx_i, &idx_j);
   }
-  if (idx_j - idx_i + 1 == n || idx_j == idx_i) { // 没法搞了
+  // 长度为 1 或 n 均没必要插入（shift）
+  if (idx_j - idx_i + 1 == n || idx_i == idx_j) {
     return;
   }
-  // if (n > 1200) {
-  //   int wanna_len = rand() % 600 + 3;
-  //   idx_i = rand() % (n - wanna_len + 1);
-  //   idx_j = idx_i + wanna_len - 1;
-  // }
-  int is_qian = rand() % 2; // 为 1 则把 idx_i 挪到 idx_j 后头
-  // int is_qian = 0;
+
   double new_dis = *curr_dis;
-  if (is_qian) {
+  int is_qian = rand() % 2;
+  if (is_qian) { // is_qian 为 1 则把 idx_i 挪到 idx_j 后头
     int pre_i = (idx_i - 1 + n) % n;
     int nxt_i = (idx_i + 1) % n;
     int nxt_j = (idx_j + 1) % n;
@@ -273,7 +257,7 @@ void OptInsert(int *curr_solution, int *tmp_solution, double *curr_dis,
     new_dis += GetDistance(curr_solution[pre_i], curr_solution[nxt_i]);
     new_dis += GetDistance(curr_solution[idx_j], curr_solution[idx_i]);
     new_dis += GetDistance(curr_solution[idx_i], curr_solution[nxt_j]);
-  } else {
+  } else { // is_qian 为 0 则把 idx_j 挪到 idx_i 前头
     int pre_i = (idx_i - 1 + n) % n;
     int pre_j = (idx_j - 1 + n) % n;
     int nxt_j = (idx_j + 1) % n;
@@ -284,21 +268,11 @@ void OptInsert(int *curr_solution, int *tmp_solution, double *curr_dis,
     new_dis += GetDistance(curr_solution[idx_j], curr_solution[idx_i]);
     new_dis += GetDistance(curr_solution[pre_j], curr_solution[nxt_j]);
   }
-  // Metropolis准则：若Δt′<0则接受S′作为新的当前解S，否则以概率exp（-Δt′/T）接受S′作为新的当前解S
+
+  // Metropolis 准则：若 Δt<0 则接受 S′ 作为新的当前解 S
+  // 否则以概率 exp(-Δt/T) 接受 S′ 作为新的当前解S
   double delta_dis = new_dis - *curr_dis;
-  if (*temprature < -0.5) {
-    // exp（-Δt′/T)=p -> -Δt′/t = ln(p) -> t = -Δt′/ln(p)
-    double wanna_dis = best_dis * 0.001;
-    *temprature = -fabs(wanna_dis) / log(INIT_ACCEPT_P);
-  }
-  if (0) {
-    printf("After range xchange %d %d, delta_dis %.2f new_dis %.2f best_dis "
-           "%.2f temp %.2f p %.2f\n",
-           idx_i, idx_j, delta_dis, new_dis, best_dis, *temprature,
-           exp(-delta_dis / *temprature));
-  }
-  if (delta_dis < 0.0 || ChkRand(exp(-delta_dis / *temprature))) {
-    *curr_dis = new_dis;
+  if (delta_dis < 0.0 || ChkRand(exp(-delta_dis / temperature))) {
     if (is_qian) {
       int tmp = curr_solution[idx_i];
       for (int i = idx_i + 1; i <= idx_j; i++) {
@@ -312,26 +286,11 @@ void OptInsert(int *curr_solution, int *tmp_solution, double *curr_dis,
       }
       curr_solution[idx_i] = tmp;
     }
+    *curr_dis = new_dis;
     if (*curr_dis < best_dis) {
       best_dis = *curr_dis;
-      // poorpool debug
-      // double qwq_dis = CalcSolutionDis(curr_solution);
-      // if (fabs(qwq_dis - *curr_dis) > 0.5) {
-      //   printf("strange qwq_dis %.4f curr_dis %.4f idx_i %d idx_j %d\n",
-      //          qwq_dis, *curr_dis, idx_i, idx_j);
-      // }
       memcpy(best_solution, curr_solution, n * sizeof(int));
     }
-  }
-}
-// 随机生成排列
-void RandomGeneratePermutation(int *arr) {
-  for (int i = 0; i < n; i++) {
-    arr[i] = i;
-  }
-  for (int i = n - 1; i > 0; i--) {
-    int j = rand() % (i + 1);
-    SwapInt(&arr[i], &arr[j]);
   }
 }
 
@@ -343,53 +302,45 @@ void SimulatedAnnealing() {
   // 贪心初始化一个解
   InitSolution();
 
-  // 两个缓冲区
+  // 操作时候所用的缓冲区
   int *curr_solution = (int *)malloc(n * sizeof(int));
-  int *tmp_solution = (int *)malloc(n * sizeof(int));
 
   int sa_cnt = 0;
   double last_best_dis = best_dis;
   // 模拟退火
   while (GetUs() < should_end_us) {
     // 复制历史最好解，按这个退火
-    // 不按照历史最好解，而是随机一点会怎么样？实测效果不咋样。。。
+    // 随机一个解退火效果很差
     double curr_dis = best_dis;
     memcpy(curr_solution, best_solution, n * sizeof(int));
 
-    // // TODO(cyx): 调试随机
-    // RandomGeneratePermutation(curr_solution);
-    // curr_dis = CalcSolutionDis(curr_solution);
-
-    double temprature = -1.0; // 当前温度。起初为 -1，后面根据第一次结果生成
-    double min_temprature = -1.0;
+    // 初始化温度、结束温度
+    double tolerant_dis = best_dis * 0.001;
+    // exp(-Δt/T)=p -> -Δt/t = ln(p) -> t = -Δt/ln(p)
+    double temperature = -fabs(tolerant_dis) / log(INIT_ACCEPT_P);
+    double min_temperature = temperature * MIN_SA_COOL_RATIO;
     do {
       int rnd = rand() % 1000; // 决定操作概率
-      if (rnd < 200) {         // 50% 概率交换两点
-        Opt2PointExchange(curr_solution, tmp_solution, &curr_dis, &temprature);
+      if (rnd < 300) {
+        // 20% 概率交换两点
+        Opt2PointExchange(curr_solution, &curr_dis, temperature);
       } else if (rnd < 300) { // 25%或者10%？
-        // 概率反转区间。不过这个概率好像也不至于这么大。主要是节点越多，越不适合进行这个操作！这个操作是
-        // O(n) 的
-        // 1000 的时候，这玩意占 80% 还不错。10000
-        // 的时候，这玩意要么设置成0，要么长度限制在sqrt(n)
-        // 长度不是越长就越好的
-        OptRangeReverse(curr_solution, tmp_solution, &curr_dis, &temprature);
+        // 10% 概率反转区间。这个操作可能不太适合 ATSP
+        OptRangeReverse(curr_solution, &curr_dis, temperature);
       } else {
+        // 70% 概率随机插入
         // 这个操作好像有点牛逼。设置成30%/10%/60%的时候效果挺好
-        OptInsert(curr_solution, tmp_solution, &curr_dis, &temprature);
+        OptInsert(curr_solution, &curr_dis, temperature);
       }
-      if (min_temprature < -0.5) {
-        min_temprature = temprature * FINAL_ACCEPT_RATE;
-      }
-      temprature *= SA_RATE;
+      temperature *= SA_COOL_RATE;
       sa_cnt++;
       if (best_dis < last_best_dis - 0.5) {
         // printf("after #%d sa, best_dis %.4f\n", sa_cnt, best_dis);
         last_best_dis = best_dis;
       }
-    } while (temprature > min_temprature);
+    } while (temperature > min_temperature);
   }
 
-  free(tmp_solution);
   free(curr_solution);
   PrintMyResults(start_us);
 }
@@ -406,7 +357,6 @@ int main(int argc, char *argv[]) {
     return 0;
   }
   fscanf(fp, "%d", &n);
-  sqrt_n = sqrt(n);
   point_x = (int *)malloc(n * sizeof(int));
   point_y = (int *)malloc(n * sizeof(int));
   for (int i = 0; i < n; i++) {
