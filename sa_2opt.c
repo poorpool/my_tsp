@@ -5,8 +5,8 @@
 #include <sys/time.h>
 #include <time.h>
 
-const int64_t SA_MAX_RUN_US = 5.5 * 1000000; // 最多允许模拟退火多少秒
-const double INIT_ACCEPT_P = 0.75; // 一开始能以多大概率接收差解
+const int64_t SA_MAX_RUN_US = 18.5 * 1000000; // 最多允许模拟退火多少秒
+const double INIT_ACCEPT_P = 0.25; // 一开始能以多大概率接收差解
 const double SA_RATE = 0.99;       // 模拟退火降温率
 const int FINAL_ACCEPT_RATE_DAO = 100000; // FINAL_ACCEPT_RATE 的倒数
 const double FINAL_ACCEPT_RATE =
@@ -126,7 +126,15 @@ void Opt2PointExchange(int *curr_solution, int *tmp_solution, double *curr_dis,
   double delta_dis = new_dis - *curr_dis;
   if (*temprature < -0.5) {
     // exp（-Δt′/T)=p -> -Δt′/t = ln(p) -> t = -Δt′/ln(p)
-    *temprature = -fabs(delta_dis) / log(INIT_ACCEPT_P);
+    double wanna_dis = best_dis * 0.001;
+    *temprature = -fabs(wanna_dis) / log(INIT_ACCEPT_P);
+  }
+  if (0) {
+
+    printf("After 2point xchange %d %d, delta_dis %.2f new_dis %.2f best_dis "
+           "%.2f temp %.2f p %.2f\n",
+           i, j, delta_dis, new_dis, best_dis, *temprature,
+           exp(-delta_dis / *temprature));
   }
   if (delta_dis < 0.0 || ChkRand(exp(-delta_dis / *temprature))) {
     *curr_dis = new_dis;
@@ -142,8 +150,15 @@ void Opt2PointExchange(int *curr_solution, int *tmp_solution, double *curr_dis,
 // 具体而言，有头、中、尾实现
 void OptRangeReverse(int *curr_solution, int *tmp_solution, double *curr_dis,
                      double *temprature) {
-  int idx_start = rand() % n;
-  int idx_end = rand() % n;
+  int wanna_len = 3;
+  if (n >= 75) {
+    wanna_len = 1 + rand() % (n / 25);
+  }
+  int idx_start = rand() % (n - wanna_len + 1);
+  int idx_end = idx_start + wanna_len - 1;
+
+  // int idx_start = rand() % n;
+  // int idx_end = rand() % n;
   if (idx_start > idx_end) {
     SwapInt(&idx_start, &idx_end);
   }
@@ -180,9 +195,10 @@ void OptRangeReverse(int *curr_solution, int *tmp_solution, double *curr_dis,
   double delta_dis = new_dis - *curr_dis;
   if (*temprature < -0.5) {
     // exp（-Δt′/T)=p -> -Δt′/t = ln(p) -> t = -Δt′/ln(p)
-    *temprature = -fabs(delta_dis) / log(INIT_ACCEPT_P);
+    double wanna_dis = best_dis * 0.001;
+    *temprature = -fabs(wanna_dis) / log(INIT_ACCEPT_P);
   }
-  if (delta_dis > 0) {
+  if (0) {
 
     printf("After range xchange %d %d, delta_dis %.2f new_dis %.2f best_dis "
            "%.2f temp %.2f p %.2f\n",
