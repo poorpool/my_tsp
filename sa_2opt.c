@@ -15,6 +15,9 @@ const double INIT_ACCEPT_P = 0.25;
 // 0.97/98/99 都差不多
 // 0.999 不太好
 const double SA_COOL_RATE = 0.97;
+// 起初能以 INIT_ACCEPT_P 的概率接收比最好值差多少的解
+// 0.001 就不错。更高了就不太好
+const double SA_TOLERATE_RATE = 0.001;
 // 退火结束时，温度为初始温度的比值
 // 比如 exp(-Δt/T)=0.25 的话，exp(-Δt/(T*0.1)) 就很小很小了
 const double MIN_SA_COOL_RATIO = 0.1;
@@ -389,7 +392,7 @@ void SimulatedAnnealing() {
     memcpy(curr_solution, best_solution, n * sizeof(int));
 
     // 初始化温度、结束温度
-    double tolerant_dis = best_dis * 0.001;
+    double tolerant_dis = best_dis * SA_TOLERATE_RATE;
     // exp(-Δt/T)=p -> -Δt/t = ln(p) -> t = -Δt/ln(p)
     double temperature = -fabs(tolerant_dis) / log(INIT_ACCEPT_P);
     double min_temperature = temperature * MIN_SA_COOL_RATIO;
